@@ -1,0 +1,76 @@
+# jAI configuration — copy to ~/.jai/config.toml (or run `jai config init`).
+#
+# Precedence: built-in provider presets < this file < environment variables
+# (JAI_PROVIDER, JAI_MODEL, JAI_MODE, JAI_BASE_URL) < command-line flags.
+#
+# API keys are NEVER stored here: jAI reads them from the environment
+# (DEEPSEEK_API_KEY, OPENAI_API_KEY, JAI_API_KEY, ...).
+
+[defaults]
+# Used when no provider/model is given on the command line.
+# provider = "deepseek"
+# model = "deepseek-chat"
+
+[agent]
+# "safe" asks before every tool call; "yolo" never asks (the policy engine still
+# denies disabled tools, paths outside the workspace and sensitive files).
+permission_mode = "safe"
+# Assistant/tool round trips per user turn.
+max_tool_rounds = 8
+# Send tool definitions to the model at all.
+tools_enabled = true
+# Approve read-only tools without asking (safe mode still confirms writes).
+auto_approve_read_only = false
+# system_prompt = "You are terse and prefer code over prose."
+# temperature = 0.2
+# max_tokens = 2048
+
+[persistence]
+enabled = true
+# Store tool results in the audit trail.
+store_tool_results = true
+# Debug logging is not implemented yet.
+store_debug_logs = false
+
+[permissions]
+# Extra directories tools may touch besides the workspace (the process working
+# directory, or --workspace). `~` is expanded.
+allowed_paths = []
+# Extra deny globs on top of the built-in sensitive list.
+deny_paths = []
+# Force a workspace instead of the current directory.
+# workspace = "~/projects/myapp"
+# Redact secrets from tool output, stored text and model context.
+redact_secrets = true
+# Per-tool-result byte cap.
+max_tool_output_bytes = 32768
+
+[tools.filesystem]
+enabled = true
+
+[tools.shell]
+enabled = true
+
+# Off by default: enable only if the model should be able to call out.
+[tools.network]
+enabled = false
+
+[web]
+bind = "127.0.0.1"
+port = 7699
+# Refuse to bind a non-loopback address.
+local_only = true
+
+# Per-provider overrides. Any OpenAI-compatible endpoint can be added here,
+# including ones that are not built in.
+# [providers.deepseek]
+# base_url = "https://api.deepseek.com"
+# api_key_env = "DEEPSEEK_API_KEY"
+# default_model = "deepseek-chat"
+# models = ["deepseek-chat", "deepseek-reasoner"]
+
+# [providers.local]
+# base_url = "http://127.0.0.1:8000/v1"
+# api_key_env = "LOCAL_API_KEY"
+# [providers.local.headers]
+# X-Tenant = "me"

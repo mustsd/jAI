@@ -1,0 +1,13 @@
+[package]
+name = "jai-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tool policy engine for jAI: workspace sandboxing, sensitive paths, safe/yolo modes"
+
+[dependencies]
+jai-core.workspace = true
+
+[lints]
+workspace = true

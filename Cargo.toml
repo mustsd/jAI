@@ -1,0 +1,60 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "jAI — local-first AI agent with OpenAI-compatible providers, SQLite persistence, CLI and web modes"
+repository = "https://github.com/liusidong/jAI"
+
+[workspace.dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4.6", features = ["derive", "env"] }
+futures-util = "0.3"
+jai-config = { path = "crates/jai-config", version = "0.1.0" }
+jai-core = { path = "crates/jai-core", version = "0.1.0" }
+jai-db = { path = "crates/jai-db", version = "0.1.0" }
+jai-policy = { path = "crates/jai-policy", version = "0.1.0" }
+jai-provider = { path = "crates/jai-provider", version = "0.1.0" }
+jai-tools = { path = "crates/jai-tools", version = "0.1.0" }
+jai-web = { path = "crates/jai-web", version = "0.1.0" }
+reqwest = { version = "0.13", default-features = false, features = [
+    "charset",
+    "http2",
+    "json",
+    "rustls",
+    "stream",
+] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+rustyline = "18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
+tokio-stream = "0.1"
+toml = "1.1"
+uuid = { version = "1", features = ["v4"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+lto = "thin"
+strip = true

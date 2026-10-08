@@ -1,0 +1,23 @@
+[package]
+name = "jai-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "jAI tools: filesystem, shell and network, restricted to a workspace"
+
+[dependencies]
+jai-core.workspace = true
+jai-policy.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

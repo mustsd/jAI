@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jAI</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #16181d;
+    --muted: #5b6270;
+    --line: #d9dce3;
+    --panel: #f6f7f9;
+    --accent: #1c5cd6;
+    --warn: #8a4b00;
+    --danger: #a12121;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e9ecf1;
+      --muted: #9aa3b2;
+      --line: #2b2f38;
+      --panel: #1b1e24;
+      --accent: #7ba7ff;
+      --warn: #e0a24a;
+      --danger: #ff8d8d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: baseline;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .meta { color: var(--muted); font-size: 13px; }
+  main {
+    display: grid;
+    grid-template-columns: minmax(200px, 260px) 1fr;
+    gap: 0;
+    height: calc(100vh - 54px);
+  }
+  @media (max-width: 720px) {
+    main { grid-template-columns: 1fr; height: auto; }
+  }
+  aside {
+    border-right: 1px solid var(--line);
+    padding: 10px;
+    overflow: auto;
+  }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 4px 0 8px; }
+  .session {
+    display: flex; justify-content: space-between; gap: 8px;
+    padding: 6px 8px; border-radius: 6px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .session:hover { background: var(--panel); }
+  .session.active { border-color: var(--accent); background: var(--panel); }
+  .session .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session .count { color: var(--muted); font-size: 12px; }
+  section.chat {
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  #messages { flex: 1; overflow: auto; padding: 16px; }
+  .msg { margin-bottom: 14px; max-width: 70ch; }
+  .msg .role { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .msg .body { white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user .body { border-left: 3px solid var(--accent); padding-left: 10px; }
+  .event { font-size: 13px; color: var(--muted); margin: 6px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  .event.error { color: var(--danger); }
+  .approval {
+    border: 1px solid var(--warn);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin: 10px 0;
+    background: var(--panel);
+  }
+  .approval pre { margin: 6px 0; white-space: pre-wrap; font-size: 12.5px; }
+  .approval button { margin-right: 8px; }
+  form.composer {
+    display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line);
+  }
+  textarea {
+    flex: 1; resize: vertical; min-height: 44px; max-height: 200px;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--fg); font: inherit;
+  }
+  button {
+    padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--fg); font: inherit; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .hint { color: var(--muted); font-size: 12px; padding: 4px 16px 12px; }
+  .error-banner { color: var(--danger); padding: 8px 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>jAI</h1>
+  <span class="meta" id="meta">loading…</span>
+</header>
+<main>
+  <aside>
+    <h2>Sessions</h2>
+    <button id="new-session" type="button">New session</button>
+    <div id="sessions"></div>
+  </aside>
+  <section class="chat">
+    <div id="messages" aria-live="polite"></div>
+    <div id="error" class="error-banner" hidden></div>
+    <form class="composer" id="composer">
+      <textarea id="input" rows="2" placeholder="Ask jAI… (Enter to send, Shift+Enter for a new line)"></textarea>
+      <button class="primary" id="send" type="submit">Send</button>
+    </form>
+    <div class="hint" id="hint"></div>
+  </section>
+</main>
+<script>
+// The token from the URL is required by every request; it is kept in memory
+// only (never in localStorage) so it disappears when the tab closes.
+const token = new URLSearchParams(location.search).get("token") || "";
+
+const state = {
+  sessionId: null,
+  streaming: false,
+  controller: null,
+};
+
+const el = {
+  meta: document.getElementById("meta"),
+  sessions: document.getElementById("sessions"),
+  messages: document.getElementById("messages"),
+  input: document.getElementById("input"),
+  send: document.getElementById("send"),
+  composer: document.getElementById("composer"),
+  error: document.getElementById("error"),
+  hint: document.getElementById("hint"),
+  newSession: document.getElementById("new-session"),
+};
+
+function showError(message) {
+  el.error.textContent = message;
+  el.error.hidden = !message;
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      "content-type": "application/json",
+      "x-jai-token": token,
+      ...(options.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      if (body && body.error) detail = body.error;
+    } catch (_) { /* keep the status text */ }
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
+function addMessage(role, content) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "msg " + role;
+  const label = document.createElement("div");
+  label.className = "role";
+  label.textContent = role === "user" ? "You" : role === "tool" ? "Tool result" : "jAI";
+  const body = document.createElement("div");
+  body.className = "body";
+  body.textContent = content;
+  wrapper.append(label, body);
+  el.messages.append(wrapper);
+  el.messages.scrollTop = el.messages.scrollHeight;
+  return body;
+}
+
+function addEvent(text, kind) {
+  const line = document.createElement("div");
+  line.className = "event" + (kind ? " " + kind : "");
+  line.textContent = text;
+  el.messages.append(line);
+  el.messages.scrollTop = el.messages.scrollHeight;
+  return line;
+}
+
+function addApproval(request, reason) {
+  const card = document.createElement("div");
+  card.className = "approval";
+  const title = document.createElement("strong");
+  title.textContent = "jAI wants to execute " + request.call.name + " (" + request.risk + ")";
+  const details = document.createElement("pre");
+  details.textContent = [
+    "summary:   " + request.summary,
+    "arguments: " + (request.call.arguments || "-"),
+    "workspace: " + (request.cwd || "-"),
+    "files:     " + (request.paths.length ? request.paths.join(", ") : "-"),
+    "",
+    reason,
+  ].join("\n");
+  const allow = document.createElement("button");
+  allow.textContent = "Allow";
+  allow.className = "primary";
+  const deny = document.createElement("button");
+  deny.textContent = "Deny";
+  const finish = async (approved) => {
+    allow.disabled = true;
+    deny.disabled = true;
+    try {
+      await api("/api/approvals/" + encodeURIComponent(request.call.id), {
+        method: "POST",
+        body: JSON.stringify({ approved }),
+      });
+      addEvent((approved ? "approved " : "denied ") + request.call.name);
+      card.remove();
+    } catch (error) {
+      showError(error.message);
+      allow.disabled = false;
+      deny.disabled = false;
+    }
+  };
+  allow.addEventListener("click", () => finish(true));
+  deny.addEventListener("click", () => finish(false));
+  card.append(title, details, allow, deny);
+  el.messages.append(card);
+  el.messages.scrollTop = el.messages.scrollHeight;
+}
+
+async function loadState() {
+  try {
+    const data = await api("/api/state");
+    el.meta.textContent = [
+      data.provider + " / " + data.model,
+      "mode " + data.mode,
+      "workspace " + data.workspace,
+      data.tools.length ? "tools " + data.tools.join(", ") : "no tools",
+    ].join("  ·  ");
+    el.hint.textContent = "Session storage: " + data.sessions.length + " stored. Tool calls follow the jAI policy engine.";
+    renderSessions(data.sessions);
+    showError("");
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+function renderSessions(sessions) {
+  el.sessions.textContent = "";
+  for (const session of sessions) {
+    const item = document.createElement("div");
+    item.className = "session" + (session.id === state.sessionId ? " active" : "");
+    item.dataset.id = session.id;
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = session.title;
+    const count = document.createElement("span");
+    count.className = "count";
+    count.textContent = session.messages;
+    item.append(title, count);
+    item.addEventListener("click", () => openSession(session.id));
+    el.sessions.append(item);
+  }
+}
+
+async function openSession(id) {
+  try {
+    const data = await api("/api/sessions/" + encodeURIComponent(id));
+    state.sessionId = id;
+    el.messages.textContent = "";
+    for (const message of data.messages) {
+      if (message.role === "system") continue;
+      if (message.content && message.content.trim()) addMessage(message.role, message.content);
+      for (const call of message.tool_calls) addEvent("tool call: " + call.name + " " + call.arguments);
+    }
+    if (!data.messages.length) addEvent("new session — say hello");
+    await loadState();
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+async function newSession() {
+  try {
+    const data = await api("/api/sessions", { method: "POST", body: "{}" });
+    await openSession(data.id);
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+async function send(text) {
+  if (!state.sessionId) await newSession();
+  if (!state.sessionId) return;
+  addMessage("user", text);
+  const assistant = addMessage("assistant", "");
+  state.streaming = true;
+  el.send.disabled = true;
+  state.controller = new AbortController();
+  try {
+    const response = await fetch("/api/sessions/" + encodeURIComponent(state.sessionId) + "/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-jai-token": token },
+      body: JSON.stringify({ input: text }),
+      signal: state.controller.signal,
+    });
+    if (!response.ok || !response.body) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        if (body && body.error) detail = body.error;
+      } catch (_) { /* keep the status text */ }
+      throw new Error(detail);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      // Decode whole chunks; partial SSE frames stay in the buffer.
+      buffer += decoder.decode(value, { stream: true });
+      let index;
+      while ((index = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        for (const line of frame.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          handleEvent(JSON.parse(line.slice(5).trim()), assistant);
+        }
+      }
+    }
+    showError("");
+  } catch (error) {
+    if (error.name !== "AbortError") showError(error.message);
+  } finally {
+    state.streaming = false;
+    el.send.disabled = false;
+    state.controller = null;
+    if (!assistant.textContent.trim()) assistant.textContent = "(no answer)";
+    await loadState();
+  }
+}
+
+function handleEvent(event, assistant) {
+  switch (event.event) {
+    case "delta":
+      assistant.textContent += event.text;
+      el.messages.scrollTop = el.messages.scrollHeight;
+      break;
+    case "assistant_message":
+      if (!event.content.trim() && event.tool_calls.length) {
+        assistant.textContent = "(tool call only)";
+      }
+      break;
+    case "tool_requested":
+      if (event.decision.kind === "deny") {
+        addEvent("denied: " + event.request.call.name + " — " + event.decision.reason, "error");
+      } else {
+        addEvent("tool: " + event.request.summary + " [" + event.request.risk + "]");
+      }
+      break;
+    case "approval_requested":
+      addApproval(event.request, event.reason);
+      break;
+    case "tool_finished":
+      addEvent("tool: " + event.call.name + " → " + (event.ok ? "ok" : "failed"));
+      break;
+    case "usage":
+      break;
+    case "failed":
+      addEvent("error: " + event.message, "error");
+      showError(event.message);
+      break;
+    case "finished":
+      break;
+    default:
+      break;
+  }
+}
+
+el.composer.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = el.input.value.trim();
+  if (!text || state.streaming) return;
+  el.input.value = "";
+  send(text);
+});
+
+el.input.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    el.composer.requestSubmit();
+  }
+});
+
+el.newSession.addEventListener("click", newSession);
+
+(async function start() {
+  if (!token) {
+    showError("No token in the URL. Reopen the link printed by `jai --web`.");
+    return;
+  }
+  await loadState();
+  const first = el.sessions.querySelector(".session");
+  if (first && first.dataset.id) {
+    await openSession(first.dataset.id);
+  } else {
+    addEvent("no sessions yet — press New session");
+  }
+})();
+</script>
+</body>
+</html>
