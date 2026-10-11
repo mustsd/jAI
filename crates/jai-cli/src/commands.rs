@@ -45,6 +45,33 @@ pub async fn run(app: &App, cli: &Cli, command: Command) -> Result<i32> {
     }
 }
 
+/// Lines of the session table, for front ends that render it themselves.
+pub fn session_table(store: &dyn SessionStore) -> Result<Vec<String>> {
+    let summaries = store.list_sessions()?;
+    if summaries.is_empty() {
+        return Ok(vec![
+            "no stored sessions yet. Start one with `jai -a` or `jai deepseek \"hello\"`."
+                .to_string(),
+        ]);
+    }
+    let now = time::unix_now();
+    let mut lines = vec![format!(
+        "{:<16}  {:<34}  {:>8}  {:<12}  MODEL",
+        "ID", "TITLE", "MESSAGES", "UPDATED"
+    )];
+    for summary in summaries {
+        lines.push(format!(
+            "{:<16}  {:<34}  {:>8}  {:<12}  {}",
+            summary.session.id,
+            truncate(summary.session.display_title(), 34),
+            summary.message_count,
+            time::format_relative(now, summary.session.updated_at),
+            summary.session.model,
+        ));
+    }
+    Ok(lines)
+}
+
 /// Table of stored sessions.
 pub fn print_sessions(store: &dyn SessionStore, json: bool) -> Result<()> {
     let summaries = store.list_sessions()?;

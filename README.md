@@ -194,6 +194,17 @@ macOS and Windows and uploads release binaries per target. It has not been run
 by the author yet (no CI in this repository when the code was written), so treat
 it as a starting point.
 
+## At session start (clock in)
+1. Read PROGRESS.md for current state
+2. Read DECISIONS.md for important decisions
+3. Run make check to confirm repo is in consistent state
+4. Continue from PROGRESS.md "Next Steps" section
+
+## Before session end (clock out)
+1. Update PROGRESS.md
+2. Run make check to confirm consistent state
+3. Commit all completed work
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).

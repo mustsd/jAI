@@ -9,6 +9,10 @@ mod args;
 mod commands;
 mod one_shot;
 mod repl;
+mod session;
+mod transcript;
+mod tui;
+mod view;
 mod ui;
 mod web_mode;
 
@@ -41,7 +45,11 @@ async fn dispatch(cli: &mut Cli) -> jai_core::Result<i32> {
         return web_mode::run(app, cli).await;
     }
     if cli.agent {
-        return repl::run(app, cli).await;
+        let controller = session::SessionController::new(app, cli)?;
+        if tui::wanted(cli) {
+            return tui::run(controller).await;
+        }
+        return repl::run(controller).await;
     }
     one_shot::run(&app, cli).await
 }

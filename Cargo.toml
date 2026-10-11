@@ -14,6 +14,7 @@ repository = "https://github.com/liusidong/jAI"
 anyhow = "1"
 axum = "0.8"
 clap = { version = "4.6", features = ["derive", "env"] }
+crossterm = "0.27"
 futures-util = "0.3"
 jai-config = { path = "crates/jai-config", version = "0.1.0" }
 jai-core = { path = "crates/jai-core", version = "0.1.0" }
@@ -22,6 +23,7 @@ jai-policy = { path = "crates/jai-policy", version = "0.1.0" }
 jai-provider = { path = "crates/jai-provider", version = "0.1.0" }
 jai-tools = { path = "crates/jai-tools", version = "0.1.0" }
 jai-web = { path = "crates/jai-web", version = "0.1.0" }
+ratatui = { version = "0.27", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 reqwest = { version = "0.13", default-features = false, features = [
     "charset",
     "http2",
@@ -47,6 +49,7 @@ tokio = { version = "1", features = [
 ] }
 tokio-stream = "0.1"
 toml = "1.1"
+unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]

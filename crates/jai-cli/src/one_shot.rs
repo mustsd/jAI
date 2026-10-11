@@ -3,7 +3,7 @@
 use crate::app::App;
 use crate::approve::approver_for;
 use crate::args::Cli;
-use crate::ui::{TurnUi, drive_turn};
+use crate::ui::{TurnUi, drive_turn, print_status};
 use jai_core::error::{Error, Result};
 use std::io::{IsTerminal, Read};
 
@@ -23,13 +23,16 @@ pub async fn run(app: &App, cli: &Cli) -> Result<i32> {
     let resolved = app.resolved_provider(cli, &provider_name)?;
     let model = app.model_name(cli, &resolved)?;
     let provider = app.provider(&resolved)?;
-    let session = app.open_session(
+    let (session, origin) = app.open_session_with_origin(
         cli.session.as_deref(),
         cli.continue_session,
         cli.new,
+        cli.no_resume,
         &provider_name,
         &model,
     )?;
+    app.store
+        .set_session_workspace(&session.id, &app.workspace.display().to_string())?;
     let engine = app.engine(
         provider,
         &provider_name,
@@ -47,13 +50,17 @@ pub async fn run(app: &App, cli: &Cli) -> Result<i32> {
             model,
             app.store.backend()
         );
+        if let Some(note) = origin.note() {
+            eprintln!("[session] {note}");
+        }
     }
 
     let handle = engine.start_turn(&session.id, &prompt);
-    let outcome = drive_turn(handle, TurnUi::for_app(app.verbose)).await;
+    let outcome = drive_turn(handle, TurnUi::for_app(app.verbose, app.show_thinking)).await;
     if let Some(message) = &outcome.message {
         eprintln!("error: {message}");
     }
+    print_status(&outcome);
     Ok(outcome.exit_code)
 }
 

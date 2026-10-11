@@ -32,6 +32,7 @@ EXAMPLES:
   jai -a                             interactive agent (safe mode)
   jai -a --mode yolo                 ... with no confirmation prompts
   jai -a -c                          ... resuming the most recent session
+  jai -a --no-tui                    ... with plain line editing
   jai --web                          local web UI on 127.0.0.1:7699
   jai sessions                       list stored conversations
   jai models ollama                  list the models a provider offers
@@ -91,6 +92,19 @@ pub struct Cli {
     /// Start a new session even when a previous one exists.
     #[arg(long)]
     pub new: bool,
+
+    /// Do not resume the session of this workspace automatically.
+    #[arg(long)]
+    pub no_resume: bool,
+
+    /// Print the conversation with plain line editing instead of the full-screen
+    /// TUI (also used automatically when stdout is not a terminal).
+    #[arg(long)]
+    pub no_tui: bool,
+
+    /// Do not print the model's reasoning/thinking text.
+    #[arg(long)]
+    pub no_thinking: bool,
 
     /// Do not write anything to the local database.
     #[arg(long)]

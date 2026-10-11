@@ -4,6 +4,7 @@
 //! UI and the tests all assemble the agent the same way.
 
 use crate::args::Cli;
+use crate::session::SessionOrigin;
 use jai_config::{Config, Paths, ProviderOverrides, ResolvedProvider};
 use jai_core::error::{Error, Result};
 use jai_core::message::PermissionMode;
@@ -30,6 +31,7 @@ pub struct App {
     pub extra: Map<String, Value>,
     pub verbose: bool,
     pub no_tools: bool,
+    pub show_thinking: bool,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
 }
@@ -65,6 +67,9 @@ impl App {
             .mode
             .map(PermissionMode::from)
             .unwrap_or(config.agent.permission_mode);
+        // Reasoning text is on unless the run asked for quiet output: it is the
+        // whole point of models that expose their thinking.
+        let show_thinking = !cli.no_thinking;
         let temperature = cli.temperature.or(config.agent.temperature);
         let max_tokens = cli.max_tokens.or(config.agent.max_tokens);
         let system_prompt = cli
@@ -82,6 +87,7 @@ impl App {
             extra: parse_extra_json(&cli.extra_json)?,
             verbose: cli.verbose,
             no_tools: cli.no_tools,
+            show_thinking,
             temperature,
             max_tokens,
         })
@@ -243,6 +249,8 @@ impl App {
             mode,
             redact: self.config.permissions.redact_secrets,
             store_tool_results: self.config.persistence.store_tool_results,
+            store_reasoning: self.config.persistence.store_reasoning,
+            context_window: self.context_window(model),
             max_tool_output_bytes: self.config.permissions.max_tool_output_bytes,
         };
         Ok(Arc::new(Engine::new(
@@ -255,37 +263,70 @@ impl App {
         )))
     }
 
-    /// Pick the session to work in.
-    pub fn open_session(
+    /// Context window used for the `Cxt:` figure: explicit configuration
+    /// (`agent.context_window`), then the built-in table for the model id, then
+    /// a documented default.
+    pub fn context_window(&self, model: &str) -> u64 {
+        jai_core::tokens::resolve_context_window(model, self.config.agent.context_window)
+    }
+
+    /// Pick the session to work in, reporting *why* it was chosen.
+    ///
+    /// Order: an explicit `--session`, then `--continue`, then — when the caller
+    /// allows it — the last session that was used in this same workspace, so
+    /// `cd ~/projects/x && jai -a` picks up where that directory left off.
+    pub fn open_session_with_origin(
         &self,
         requested: Option<&str>,
         continue_latest: bool,
         force_new: bool,
+        no_resume: bool,
         provider: &str,
         model: &str,
-    ) -> Result<Session> {
+    ) -> Result<(Session, SessionOrigin)> {
         if force_new {
-            return self.store.create_session(provider, model, None);
+            let previous = self.store.latest_session()?;
+            let session = self.store.create_session(provider, model, None)?;
+            let origin = match previous {
+                Some(previous) => SessionOrigin::ForcedNew {
+                    previous: previous.id,
+                },
+                None => SessionOrigin::New,
+            };
+            return Ok((session, origin));
         }
         if let Some(id) = requested {
             if id.eq_ignore_ascii_case("latest") {
                 return Ok(match self.store.latest_session()? {
-                    Some(session) => session,
-                    None => self.store.create_session(provider, model, None)?,
+                    Some(session) => (session, SessionOrigin::Requested),
+                    None => (
+                        self.store.create_session(provider, model, None)?,
+                        SessionOrigin::New,
+                    ),
                 });
             }
-            return self.store.get_session(id)?.ok_or_else(|| {
+            let session = self.store.get_session(id)?.ok_or_else(|| {
                 Error::config(format!(
                     "unknown session `{id}`; run `jai sessions` to list stored conversations"
                 ))
-            });
+            })?;
+            return Ok((session, SessionOrigin::Requested));
         }
         if continue_latest {
             if let Some(session) = self.store.latest_session()? {
-                return Ok(session);
+                return Ok((session, SessionOrigin::Requested));
             }
         }
-        self.store.create_session(provider, model, None)
+        if !no_resume {
+            let workspace = self.workspace.display().to_string();
+            if let Some(session) = self.store.latest_session_for_workspace(&workspace)? {
+                return Ok((session, SessionOrigin::Workspace { workspace }));
+            }
+        }
+        Ok((
+            self.store.create_session(provider, model, None)?,
+            SessionOrigin::New,
+        ))
     }
 
     /// Persist the provider/model selection as the new default.

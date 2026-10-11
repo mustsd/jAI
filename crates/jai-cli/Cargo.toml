@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+crossterm.workspace = true
 jai-config.workspace = true
 jai-core.workspace = true
 jai-db.workspace = true
@@ -19,12 +20,15 @@ jai-policy.workspace = true
 jai-provider.workspace = true
 jai-tools.workspace = true
 jai-web.workspace = true
+ratatui.workspace = true
 rustyline.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+unicode-width.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+unicode-width.workspace = true
 axum.workspace = true
 
 [lints]
