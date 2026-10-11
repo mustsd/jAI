@@ -11,6 +11,8 @@ use crate::message::{ChatEvent, TokenUsage, ToolCall, normalize_tool_name};
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AssistantTurn {
     pub text: String,
+    /// Reasoning text, when the provider streamed any.
+    pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
     pub usage: TokenUsage,
 }
@@ -27,6 +29,7 @@ struct PartialCall {
 #[derive(Debug, Default)]
 pub struct Accumulator {
     text: String,
+    reasoning: String,
     calls: Vec<PartialCall>,
     usage: TokenUsage,
     finished: bool,
@@ -41,6 +44,7 @@ impl Accumulator {
     pub fn apply(&mut self, event: &ChatEvent) {
         match event {
             ChatEvent::Delta(text) => self.push_text(text),
+            ChatEvent::ReasoningDelta(text) => self.push_reasoning(text),
             ChatEvent::ToolCallDelta {
                 index,
                 id,
@@ -59,6 +63,11 @@ impl Accumulator {
 
     pub fn push_text(&mut self, text: &str) {
         self.text.push_str(text);
+    }
+
+    /// Append reasoning text (DeepSeek `reasoning_content` and friends).
+    pub fn push_reasoning(&mut self, text: &str) {
+        self.reasoning.push_str(text);
     }
 
     /// Merge one tool-call fragment.
@@ -93,6 +102,10 @@ impl Accumulator {
         &self.text
     }
 
+    pub fn reasoning(&self) -> &str {
+        &self.reasoning
+    }
+
     pub fn usage(&self) -> TokenUsage {
         self.usage
     }
@@ -103,7 +116,9 @@ impl Accumulator {
 
     /// True when the provider produced nothing at all.
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty() && self.calls.iter().all(|call| call.name.is_empty())
+        self.text.is_empty()
+            && self.reasoning.is_empty()
+            && self.calls.iter().all(|call| call.name.is_empty())
     }
 
     /// Finalise the turn.
@@ -131,6 +146,7 @@ impl Accumulator {
         }
         AssistantTurn {
             text: self.text,
+            reasoning: self.reasoning,
             tool_calls,
             usage: self.usage,
         }
@@ -148,6 +164,29 @@ mod tests {
             name: name.map(str::to_string),
             arguments_delta: args.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn reasoning_deltas_are_kept_apart_from_the_answer() {
+        let mut acc = Accumulator::new();
+        acc.apply(&ChatEvent::ReasoningDelta("Let me ".to_string()));
+        acc.apply(&ChatEvent::ReasoningDelta("think.".to_string()));
+        acc.apply(&ChatEvent::Delta("42".to_string()));
+        assert_eq!(acc.reasoning(), "Let me think.");
+        assert_eq!(acc.text(), "42");
+        let turn = acc.into_turn();
+        assert_eq!(turn.text, "42");
+        assert_eq!(turn.reasoning, "Let me think.");
+    }
+
+    #[test]
+    fn a_reasoning_only_turn_is_not_empty() {
+        let mut acc = Accumulator::new();
+        acc.apply(&ChatEvent::ReasoningDelta("hmm".to_string()));
+        assert!(!acc.is_empty());
+        let turn = acc.into_turn();
+        assert!(turn.text.is_empty());
+        assert_eq!(turn.reasoning, "hmm");
     }
 
     #[test]

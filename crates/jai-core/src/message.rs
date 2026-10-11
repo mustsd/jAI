@@ -98,6 +98,14 @@ pub struct Message {
     pub role: Role,
     #[serde(default)]
     pub content: String,
+    /// Reasoning/thinking text the model produced alongside `content`
+    /// (`reasoning_content` in DeepSeek's dialect).
+    ///
+    /// This is *never* sent back to the provider — it is kept so the user can
+    /// read what the model was thinking and so `jai session --export` keeps the
+    /// full record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,10 +131,22 @@ impl Message {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            reasoning: None,
             tool_calls,
             tool_call_id: None,
             name: None,
         }
+    }
+
+    /// Attach reasoning text to an assistant message.
+    pub fn with_reasoning(mut self, reasoning: Option<String>) -> Self {
+        self.reasoning = reasoning.filter(|text| !text.trim().is_empty());
+        self
+    }
+
+    /// Reasoning text, when the model produced any.
+    pub fn reasoning(&self) -> Option<&str> {
+        self.reasoning.as_deref().filter(|text| !text.trim().is_empty())
     }
 
     /// Result of a tool call, fed back to the model.
@@ -138,6 +158,7 @@ impl Message {
         Self {
             role: Role::Tool,
             content: content.into(),
+            reasoning: None,
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             name: Some(name.into()),
@@ -148,6 +169,7 @@ impl Message {
         Self {
             role,
             content: content.into(),
+            reasoning: None,
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
@@ -234,6 +256,8 @@ impl ChatRequest {
 pub enum ChatEvent {
     /// Visible assistant text.
     Delta(String),
+    /// Reasoning/thinking text, when the provider exposes it.
+    ReasoningDelta(String),
     /// Incremental tool call; `index` groups fragments of one call.
     ToolCallDelta {
         index: usize,

@@ -125,6 +125,12 @@ pub struct StreamChoice {
 pub struct DeltaPayload {
     #[serde(default)]
     pub content: Option<String>,
+    /// DeepSeek's dialect for streamed chain-of-thought.
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
+    /// OpenRouter and a few others use the shorter key.
+    #[serde(default)]
+    pub reasoning: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<ToolCallFragment>>,
 }
@@ -202,6 +208,13 @@ impl StreamChunk {
             if let Some(content) = delta.content {
                 if !content.is_empty() {
                     events.push(ChatEvent::Delta(content));
+                }
+            }
+            // Reasoning is reported before the answer; the provider decides the
+            // key, so both spellings are accepted.
+            for reasoning in [delta.reasoning_content, delta.reasoning].into_iter().flatten() {
+                if !reasoning.is_empty() {
+                    events.push(ChatEvent::ReasoningDelta(reasoning));
                 }
             }
             for fragment in delta.tool_calls.into_iter().flatten() {

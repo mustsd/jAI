@@ -24,6 +24,7 @@ pub const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../../../migrations/001_initial.sql")),
     (2, include_str!("../../../migrations/002_tool_calls.sql")),
     (3, include_str!("../../../migrations/003_usage.sql")),
+    (4, include_str!("../../../migrations/004_reasoning.sql")),
 ];
 
 /// SQLite-backed [`SessionStore`].
@@ -306,6 +307,52 @@ impl SessionStore for SqliteStore {
         Ok(count.max(0) as u64)
     }
 
+    fn set_session_workspace(&self, session_id: &str, workspace: &str) -> Result<()> {
+        let now = time::unix_now();
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO session_workspaces (session_id, workspace, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?3)
+             ON CONFLICT(session_id) DO UPDATE
+                 SET workspace = excluded.workspace, updated_at = excluded.updated_at",
+            params![session_id, workspace, now],
+        )
+        .map_err(storage_error)?;
+        Ok(())
+    }
+
+    fn session_workspace(&self, session_id: &str) -> Result<Option<String>> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT workspace FROM session_workspaces WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage_error)
+    }
+
+    fn latest_session_for_workspace(&self, workspace: &str) -> Result<Option<Session>> {
+        let conn = self.lock()?;
+        conn.query_row(
+            &format!(
+                "SELECT {} FROM sessions s
+                 WHERE EXISTS (SELECT 1 FROM session_workspaces w
+                                WHERE w.session_id = s.id AND w.workspace = ?1)
+                 ORDER BY s.updated_at DESC LIMIT 1",
+                SESSION_COLUMNS
+                    .split(", ")
+                    .map(|column| format!("s.{}", column.trim()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            params![workspace],
+            row_to_session,
+        )
+        .optional()
+        .map_err(storage_error)
+    }
+
     fn append_message(&self, session_id: &str, message: &Message) -> Result<i64> {
         let tool_calls =
             if message.tool_calls.is_empty() {
@@ -328,8 +375,9 @@ impl SessionStore for SqliteStore {
             return Err(Error::storage(format!("unknown session `{session_id}`")));
         }
         conn.execute(
-            "INSERT INTO messages (session_id, role, content, created_at, tool_calls, tool_call_id, tool_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages
+                (session_id, role, content, created_at, tool_calls, tool_call_id, tool_name, reasoning)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 session_id,
                 message.role.as_str(),
@@ -337,7 +385,8 @@ impl SessionStore for SqliteStore {
                 time::unix_now(),
                 tool_calls,
                 message.tool_call_id,
-                message.name
+                message.name,
+                message.reasoning
             ],
         )
         .map_err(storage_error)?;
@@ -353,7 +402,7 @@ impl SessionStore for SqliteStore {
         let conn = self.lock()?;
         let mut statement = conn
             .prepare(
-                "SELECT role, content, tool_calls, tool_call_id, tool_name
+                "SELECT role, content, tool_calls, tool_call_id, tool_name, reasoning
                  FROM messages WHERE session_id = ?1 ORDER BY id ASC",
             )
             .map_err(storage_error)?;
@@ -364,6 +413,7 @@ impl SessionStore for SqliteStore {
                 Ok(Message {
                     role: Role::parse(&role).unwrap_or(Role::User),
                     content: row.get(1)?,
+                    reasoning: row.get(5)?,
                     tool_calls: tool_calls
                         .and_then(|json| serde_json::from_str::<Vec<ToolCall>>(&json).ok())
                         .unwrap_or_default(),

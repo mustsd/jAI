@@ -114,6 +114,16 @@ pub trait SessionStore: Send + Sync {
 
     fn setting(&self, key: &str) -> Result<Option<String>>;
     fn set_setting(&self, key: &str, value: &str) -> Result<()>;
+
+    /// Record which workspace a session belongs to, so a later run in the same
+    /// directory can offer to resume it.
+    fn set_session_workspace(&self, session_id: &str, workspace: &str) -> Result<()>;
+
+    /// Workspace a session was last used in, when one was recorded.
+    fn session_workspace(&self, session_id: &str) -> Result<Option<String>>;
+
+    /// Most recently updated session recorded for `workspace`.
+    fn latest_session_for_workspace(&self, workspace: &str) -> Result<Option<Session>>;
 }
 
 /// Session title derived from the first user message.
@@ -160,9 +170,16 @@ pub fn session_markdown(session: &Session, messages: &[Message], audit: &[ToolAu
             Role::Tool => "Tool result",
         };
         out.push_str(&format!("### {label}\n\n"));
+        if let Some(reasoning) = message.reasoning() {
+            out.push_str("<details><summary>reasoning</summary>\n\n");
+            out.push_str(reasoning.trim());
+            out.push_str("\n\n</details>\n\n");
+        }
         let content = message.content.trim();
         if content.is_empty() {
-            out.push_str("_(no text)_\n\n");
+            if message.reasoning().is_none() {
+                out.push_str("_(no text)_\n\n");
+            }
         } else {
             out.push_str(content);
             out.push_str("\n\n");
@@ -208,6 +225,7 @@ pub struct MemoryStore {
 struct MemoryState {
     sessions: BTreeMap<String, Session>,
     messages: BTreeMap<String, Vec<Message>>,
+    workspaces: BTreeMap<String, String>,
     audit: Vec<ToolAudit>,
     usage: BTreeMap<String, TokenUsage>,
     settings: BTreeMap<String, String>,
@@ -280,6 +298,7 @@ impl SessionStore for MemoryStore {
         let mut state = self.lock()?;
         state.messages.remove(id);
         state.audit.retain(|entry| entry.session_id != id);
+        state.workspaces.remove(id);
         Ok(state.sessions.remove(id).is_some())
     }
 
@@ -328,7 +347,30 @@ impl SessionStore for MemoryStore {
         state.messages.clear();
         state.audit.clear();
         state.usage.clear();
+        state.workspaces.clear();
         Ok(count)
+    }
+
+    fn set_session_workspace(&self, session_id: &str, workspace: &str) -> Result<()> {
+        self.lock()?
+            .workspaces
+            .insert(session_id.to_string(), workspace.to_string());
+        Ok(())
+    }
+
+    fn session_workspace(&self, session_id: &str) -> Result<Option<String>> {
+        Ok(self.lock()?.workspaces.get(session_id).cloned())
+    }
+
+    fn latest_session_for_workspace(&self, workspace: &str) -> Result<Option<Session>> {
+        let state = self.lock()?;
+        Ok(state
+            .workspaces
+            .iter()
+            .filter(|(_, path)| path.as_str() == workspace)
+            .filter_map(|(session_id, _)| state.sessions.get(session_id))
+            .max_by_key(|session| session.updated_at)
+            .cloned())
     }
 
     fn append_message(&self, session_id: &str, message: &Message) -> Result<i64> {

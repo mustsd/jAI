@@ -16,6 +16,8 @@ use crate::redact::Redactor;
 use crate::store::{SessionStore, ToolAuditRecord, status};
 use crate::stream_accum::Accumulator;
 use crate::text::truncate_bytes;
+use crate::tokens;
+use crate::usage::ContextUsage;
 use crate::tool::ToolExecutor;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -38,6 +40,11 @@ pub struct EngineSettings {
     pub mode: PermissionMode,
     pub redact: bool,
     pub store_tool_results: bool,
+    /// Persist assistant reasoning/thinking text (it is never sent back to the
+    /// provider, only stored and displayed).
+    pub store_reasoning: bool,
+    /// Model context window used for the `Cxt:` figure.
+    pub context_window: u64,
     pub max_tool_output_bytes: usize,
 }
 
@@ -55,6 +62,8 @@ impl EngineSettings {
             mode: PermissionMode::Safe,
             redact: true,
             store_tool_results: true,
+            store_reasoning: true,
+            context_window: tokens::DEFAULT_CONTEXT_WINDOW,
             max_tool_output_bytes: 32 * 1024,
         }
     }
@@ -70,8 +79,15 @@ pub enum EngineEvent {
     Delta {
         text: String,
     },
+    /// Reasoning/thinking text (DeepSeek `reasoning_content`, ...). Never sent
+    /// back to the provider.
+    ReasoningDelta {
+        text: String,
+    },
     AssistantMessage {
         content: String,
+        /// Reasoning text the model produced, when it produced any.
+        reasoning: Option<String>,
         tool_calls: Vec<ToolCall>,
     },
     /// A tool call reached the policy engine.
@@ -94,6 +110,14 @@ pub enum EngineEvent {
     },
     Usage {
         usage: TokenUsage,
+    },
+    /// Size of the active context (system prompt + tools + conversation).
+    Context {
+        usage: ContextUsage,
+    },
+    /// Something the user should know that is not an error.
+    Notice {
+        message: String,
     },
     Failed {
         message: String,
@@ -136,6 +160,7 @@ impl TurnHandle {
 }
 
 /// Cancellation handle that does not borrow the event stream.
+#[derive(Clone)]
 pub struct TurnCanceller {
     cancel: CancelFlag,
 }
@@ -198,6 +223,22 @@ impl Engine {
     pub fn store(&self) -> &Arc<dyn SessionStore> {
         &self.store
     }
+    /// What the *next* request would carry for this session: the system prompt,
+    /// the tool schemas and the stored conversation, estimated locally.
+    ///
+    /// Front ends show this as the `Cxt:` figure before the first turn, so the
+    /// status line has a real number from the moment the agent starts rather
+    /// than appearing only once a provider reports usage.
+    pub fn context_estimate(&self, session_id: &str) -> Result<ContextUsage> {
+        let settings = self.settings();
+        let messages = self.history(session_id, &settings)?;
+        let specs = self.tool_specs(&settings);
+        Ok(ContextUsage::estimate(
+            tokens::estimate_context(&messages, &specs),
+            settings.context_window,
+        ))
+    }
+
 
     pub fn provider(&self) -> &Arc<dyn Provider> {
         &self.provider
@@ -292,6 +333,11 @@ impl Engine {
                 cancel: Some(Arc::clone(cancel)),
             };
 
+            // What the next request will actually carry is known before it is
+            // sent; report it so the UI can show context growth as it happens.
+            self.report_context(tx, &request.messages, &tool_specs, &settings)
+                .await?;
+
             let mut stream = self.provider.chat_stream(request).await?;
             let mut accumulator = Accumulator::new();
             while let Some(event) = stream.recv().await {
@@ -299,8 +345,14 @@ impl Engine {
                     return Err(Error::Cancelled);
                 }
                 let event = event?;
-                if let ChatEvent::Delta(text) = &event {
-                    emit(tx, EngineEvent::Delta { text: text.clone() }).await?;
+                match &event {
+                    ChatEvent::Delta(text) => {
+                        emit(tx, EngineEvent::Delta { text: text.clone() }).await?;
+                    }
+                    ChatEvent::ReasoningDelta(text) => {
+                        emit(tx, EngineEvent::ReasoningDelta { text: text.clone() }).await?;
+                    }
+                    _ => {}
                 }
                 accumulator.apply(&event);
             }
@@ -311,9 +363,24 @@ impl Engine {
                     .record_usage(session_id, &settings.model, &turn.usage)?;
                 total_usage.add(&turn.usage);
                 emit(tx, EngineEvent::Usage { usage: turn.usage }).await?;
+                // Provider numbers are authoritative: replace the local estimate
+                // with the real prompt size of the request that just ran.
+                emit(
+                    tx,
+                    EngineEvent::Context {
+                        usage: ContextUsage::reported(&turn.usage, settings.context_window),
+                    },
+                )
+                .await?;
+                self.warn_near_context_limit(tx, &settings, &turn.usage, total_usage)
+                    .await?;
             }
 
-            if turn.text.is_empty() && turn.tool_calls.is_empty() && round == 0 {
+            if turn.text.is_empty()
+                && turn.reasoning.trim().is_empty()
+                && turn.tool_calls.is_empty()
+                && round == 0
+            {
                 return Err(Error::internal(format!(
                     "{} returned an empty response for model `{}`",
                     settings.provider, settings.model
@@ -321,14 +388,26 @@ impl Engine {
             }
 
             let stored_text = self.redact_text(&turn.text);
+            let stored_reasoning = if settings.store_reasoning {
+                Some(self.redact_text(&turn.reasoning))
+            } else {
+                None
+            };
             self.store.append_message(
                 session_id,
-                &Message::assistant_with_tools(stored_text, turn.tool_calls.clone()),
+                &Message::assistant_with_tools(stored_text, turn.tool_calls.clone())
+                    .with_reasoning(stored_reasoning),
             )?;
             emit(
                 tx,
                 EngineEvent::AssistantMessage {
                     content: self.redact_text(&turn.text),
+                    reasoning: if settings.store_reasoning {
+                        Some(self.redact_text(&turn.reasoning))
+                            .filter(|text| !text.trim().is_empty())
+                    } else {
+                        None
+                    },
                     tool_calls: turn.tool_calls.clone(),
                 },
             )
@@ -356,6 +435,55 @@ impl Engine {
         }
         messages.extend(self.store.messages(session_id)?);
         Ok(messages)
+    }
+
+    /// Report what the next request would carry.
+    async fn report_context(
+        &self,
+        tx: &mpsc::Sender<EngineEvent>,
+        messages: &[Message],
+        specs: &[ToolSpec],
+        settings: &EngineSettings,
+    ) -> Result<()> {
+        let estimate = tokens::estimate_context(messages, specs);
+        emit(
+            tx,
+            EngineEvent::Context {
+                usage: ContextUsage::estimate(estimate, settings.context_window),
+            },
+        )
+        .await
+    }
+
+    /// Mention once per turn when the reported context is close to the window,
+    /// so a run that is about to lose its older history says so out loud.
+    async fn warn_near_context_limit(
+        &self,
+        tx: &mpsc::Sender<EngineEvent>,
+        settings: &EngineSettings,
+        usage: &TokenUsage,
+        total_usage: &TokenUsage,
+    ) -> Result<()> {
+        let context = ContextUsage::reported(usage, settings.context_window);
+        if !context.is_near_limit() {
+            return Ok(());
+        }
+        let percent = context.percent().unwrap_or(0.0);
+        // Only the first round that trips the threshold warns.
+        if total_usage.prompt_tokens > usage.prompt_tokens {
+            return Ok(());
+        }
+        emit(
+            tx,
+            EngineEvent::Notice {
+                message: format!(
+                    "context is {percent:.0}% full ({} of {} tokens); older messages may be dropped by the provider",
+                    crate::usage::format_count(context.tokens),
+                    crate::usage::format_count(context.window)
+                ),
+            },
+        )
+        .await
     }
 
     fn tool_specs(&self, settings: &EngineSettings) -> Vec<ToolSpec> {

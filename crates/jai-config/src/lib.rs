@@ -78,6 +78,9 @@ pub struct AgentConfig {
     pub temperature: Option<f32>,
     /// `max_tokens` sent to the provider; omitted when unset.
     pub max_tokens: Option<u32>,
+    /// Model context window for the `Cxt:` figure. When unset, jAI uses its
+    /// built-in table for well-known model ids.
+    pub context_window: Option<u64>,
 }
 
 impl Default for AgentConfig {
@@ -90,6 +93,7 @@ impl Default for AgentConfig {
             auto_approve_read_only: false,
             temperature: None,
             max_tokens: None,
+            context_window: None,
         }
     }
 }
@@ -100,6 +104,9 @@ impl Default for AgentConfig {
 pub struct PersistenceConfig {
     pub enabled: bool,
     pub store_tool_results: bool,
+    /// Persist the model's reasoning text. It is never replayed to the provider,
+    /// so storing it only affects what you can read back later.
+    pub store_reasoning: bool,
     pub store_debug_logs: bool,
 }
 
@@ -108,6 +115,7 @@ impl Default for PersistenceConfig {
         Self {
             enabled: true,
             store_tool_results: true,
+            store_reasoning: true,
             store_debug_logs: false,
         }
     }
@@ -307,6 +315,13 @@ impl Config {
             return Err(ConfigError::Invalid(
                 "agent.max_tool_rounds must be at least 1".to_string(),
             ));
+        }
+        if let Some(window) = self.agent.context_window {
+            if window < 1_000 {
+                return Err(ConfigError::Invalid(
+                    "agent.context_window must be at least 1000 tokens".to_string(),
+                ));
+            }
         }
         if self.permissions.max_tool_output_bytes == 0 {
             return Err(ConfigError::Invalid(
