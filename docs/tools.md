@@ -48,6 +48,40 @@ existing file. Existing directories are never replaced.
 
 Risk: **write**.
 
+## `filesystem_edit`
+
+```json
+{
+  "path": "crates/jai-core/src/engine.rs",
+  "old_string": "let rounds = 8;",
+  "new_string": "let rounds = 16;",
+  "expected_replacements": 1
+}
+```
+
+Replaces an exact snippet in an existing file. This exists to save tokens: a full
+`filesystem_write` costs one output token per byte the model rewrites, so changing
+three lines of a 40 KB file means regenerating all 40 KB (~10 k tokens) — slow,
+expensive, and easy to truncate mid-file. `filesystem_edit` sends only the lines
+that change.
+
+* `old_string` must occur **exactly** `expected_replacements` times (default `1`)
+  in the file, or the call fails with an explanation and the file is left alone.
+  An ambiguous anchor is a hard error rather than a silent change in the wrong
+  place; include a line or two of context to disambiguate, or set
+  `expected_replacements` to the count you mean.
+* `new_string` must differ from `old_string`, and `old_string` must not be empty.
+* The file must already exist — creating files stays `filesystem_write`'s job.
+  Directories, binary files (NUL byte in the first 8 KiB) and non-UTF-8 files are
+  rejected; use `filesystem_write` to replace those wholesale.
+* The file is rewritten through a sibling temp file plus a rename, so an
+  interrupted edit cannot leave a half-written file, and the original permissions
+  (such as the executable bit) are preserved.
+* Errors are stated as `ERROR: …` with the observed match count, so the model can
+  re-read the file and retry instead of guessing.
+
+Risk: **write**.
+
 ## `filesystem_delete`
 
 ```json

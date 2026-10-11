@@ -292,6 +292,7 @@ fn a_one_shot_prompt_streams_an_answer_and_is_stored() {
     // here used to make DeepSeek reject the whole request with HTTP 400.
     let names = offered_tool_names(&requests[0]);
     assert!(names.contains(&"filesystem_read".to_string()), "{names:?}");
+    assert!(names.contains(&"filesystem_edit".to_string()), "{names:?}");
     assert!(names.contains(&"shell_execute".to_string()), "{names:?}");
     for name in &names {
         assert!(wire_safe_tool_name(name), "`{name}` is not wire-safe");

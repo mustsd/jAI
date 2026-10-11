@@ -33,6 +33,7 @@ use std::time::Duration;
 pub const FS_READ: &str = "filesystem_read";
 pub const FS_LIST: &str = "filesystem_list";
 pub const FS_WRITE: &str = "filesystem_write";
+pub const FS_EDIT: &str = "filesystem_edit";
 pub const FS_DELETE: &str = "filesystem_delete";
 pub const SHELL_EXECUTE: &str = "shell_execute";
 pub const NETWORK_REQUEST: &str = "network_request";
@@ -143,7 +144,7 @@ impl Tools {
     pub fn enabled_tools(&self) -> Vec<&'static str> {
         let mut names = Vec::new();
         if self.config.filesystem {
-            names.extend([FS_READ, FS_LIST, FS_WRITE, FS_DELETE]);
+            names.extend([FS_READ, FS_LIST, FS_WRITE, FS_EDIT, FS_DELETE]);
         }
         if self.config.shell {
             names.push(SHELL_EXECUTE);
@@ -218,6 +219,25 @@ impl ToolExecutor for ToolRegistry {
                             "overwrite": {"type": "boolean", "description": "Allow replacing an existing file (default true)"}
                         },
                         "required": ["path", "content"]
+                    }),
+                },
+                FS_EDIT => ToolSpec {
+                    name: FS_EDIT.to_string(),
+                    description: "Replace an exact snippet in an existing text file. Cheaper \
+                                  than filesystem_write for small changes: send only the lines \
+                                  that change, not the whole file. old_string must match \
+                                  exactly `expected_replacements` times (default 1) or the \
+                                  edit is refused."
+                        .to_string(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "File path, relative to the workspace"},
+                            "old_string": {"type": "string", "description": "Exact text to replace, copied from the file (include surrounding lines to make it unique)"},
+                            "new_string": {"type": "string", "description": "Replacement text; must differ from old_string"},
+                            "expected_replacements": {"type": "integer", "description": "How many occurrences must match (default 1)"}
+                        },
+                        "required": ["path", "old_string", "new_string"]
                     }),
                 },
                 FS_DELETE => ToolSpec {
@@ -312,6 +332,16 @@ impl ToolExecutor for ToolRegistry {
                 .with_cwd(workspace),
                 Err(reason) => unusable(call, reason, workspace),
             },
+            FS_EDIT => match parse_args::<fs::EditArgs>(call) {
+                Ok(args) => ToolRequest::new(
+                    call.clone(),
+                    format!("edit `{}`", args.path),
+                    RiskLevel::Write,
+                )
+                .with_paths(vec![args.path])
+                .with_cwd(workspace),
+                Err(reason) => unusable(call, reason, workspace),
+            },
             FS_DELETE => match parse_args::<fs::DeleteArgs>(call) {
                 Ok(args) => {
                     let what = if args.recursive.unwrap_or(false) {
@@ -390,6 +420,10 @@ impl ToolExecutor for ToolRegistry {
                 FS_WRITE => {
                     let args: fs::WriteArgs = parse_args(call)?;
                     fs::write(self.tools.guard(), &args).await
+                }
+                FS_EDIT => {
+                    let args: fs::EditArgs = parse_args(call)?;
+                    fs::edit(self.tools.guard(), &args).await
                 }
                 FS_DELETE => {
                     let args: fs::DeleteArgs = parse_args(call)?;
@@ -484,7 +518,7 @@ mod tests {
         // a dotted or otherwise exotic tool name must never reach the wire.
         let registry = tools(ToolsConfig::new("/tmp").with_tools(true, true, true));
         let specs = registry.specs();
-        assert_eq!(specs.len(), 6);
+        assert_eq!(specs.len(), 7);
         for spec in specs {
             assert!(
                 jai_core::is_valid_tool_name(&spec.name),
@@ -505,6 +539,14 @@ mod tests {
         let write = registry.describe(&call(FS_WRITE, r#"{"path":"a.txt","content":"hello"}"#));
         assert_eq!(write.risk, RiskLevel::Write);
         assert!(write.summary.contains("5 bytes"), "{}", write.summary);
+
+        let edit = registry.describe(&call(
+            FS_EDIT,
+            r#"{"path":"a.txt","old_string":"a","new_string":"b"}"#,
+        ));
+        assert_eq!(edit.risk, RiskLevel::Write);
+        assert_eq!(edit.summary, "edit `a.txt`");
+        assert_eq!(edit.paths, vec!["a.txt"]);
 
         let delete = registry.describe(&call(FS_DELETE, r#"{"path":"target"}"#));
         assert_eq!(delete.risk, RiskLevel::Destructive);
@@ -573,6 +615,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read.content, "hello");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn edit_tool_runs_through_the_registry() {
+        let dir = std::env::temp_dir().join(format!("jai-tools-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "one two three\n").unwrap();
+        let registry = tools(ToolsConfig::new(&dir));
+
+        let outcome = registry
+            .execute(&call(
+                FS_EDIT,
+                r#"{"path":"a.txt","old_string":"two","new_string":"2"}"#,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            outcome.content.contains("replaced 1 occurrence"),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "one 2 three\n"
+        );
+
+        // Missing arguments are a hard error, never a silent whole-file rewrite.
+        let error = registry.execute(&call(FS_EDIT, "{}")).await.unwrap_err();
+        assert!(error.to_string().contains("invalid arguments"), "{error}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

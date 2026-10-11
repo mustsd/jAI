@@ -273,6 +273,7 @@ mod tests {
         for (tool, risk) in [
             ("filesystem_read", RiskLevel::ReadOnly),
             ("filesystem_write", RiskLevel::Write),
+            ("filesystem_edit", RiskLevel::Write),
             ("filesystem_delete", RiskLevel::Destructive),
             ("shell_execute", RiskLevel::Execute),
         ] {
@@ -293,6 +294,36 @@ mod tests {
         ));
         let reason = decision.reason().unwrap_or_default().to_string();
         assert!(reason.contains("delete"), "{reason}");
+    }
+
+    #[test]
+    fn edit_is_a_write_and_never_silently_auto_approved_as_a_read() {
+        let policy = ToolPolicy::new(
+            PolicyConfig::new("/work/project")
+                .with_mode(PermissionMode::Safe)
+                .with_auto_approve_read_only(true),
+        );
+        let decision = policy.evaluate(&request(
+            "filesystem_edit",
+            RiskLevel::Write,
+            vec!["src/main.rs"],
+        ));
+        assert!(
+            matches!(decision, Decision::Confirm { .. }),
+            "auto_approve_read_only must not cover edits: {decision:?}"
+        );
+        assert!(decision.reason().unwrap().contains("writes to disk"));
+
+        // Disabling the filesystem family disables edits too.
+        let disabled =
+            ToolPolicy::new(PolicyConfig::new("/work/project").with_tools(false, true, false));
+        assert!(
+            disabled
+                .evaluate(&request("filesystem_edit", RiskLevel::Write, vec!["a.txt"]))
+                .reason()
+                .unwrap()
+                .contains("filesystem tools are disabled")
+        );
     }
 
     #[test]
