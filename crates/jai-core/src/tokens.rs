@@ -16,7 +16,13 @@ use crate::message::{Message, ToolSpec};
 
 /// Context window assumed when neither configuration nor [`context_window_for`]
 /// knows better.
-pub const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
+///
+/// Sized for the models jAI is pointed at today: the reasoning and coding models
+/// in the built-in table are 1M-context or heading there, and underestimating
+/// makes the `Cxt:` figure cry wolf — jAI would warn about a window filling up
+/// that is not close to full. An explicit `agent.context_window` (or a model id
+/// the table knows) still wins; this is only the last resort.
+pub const DEFAULT_CONTEXT_WINDOW: u64 = 1_000_000;
 
 /// Per-message framing overhead (role, separators) charged by chat APIs.
 const MESSAGE_OVERHEAD_TOKENS: u64 = 4;
@@ -95,12 +101,16 @@ pub fn context_window_for(model: &str) -> Option<u64> {
         return Some(size);
     }
     const TABLE: &[(&str, u64)] = &[
-        // DeepSeek
-        ("deepseek-reasoner", 64_000),
-        ("deepseek-r1", 64_000),
+        // DeepSeek. Both current ids are 128k; the older 64k reasoner is gone.
+        ("deepseek-reasoner", 128_000),
+        ("deepseek-r1", 128_000),
         ("deepseek-chat", 128_000),
         ("deepseek-coder", 128_000),
-        ("deepseek", 64_000),
+        // A bare `deepseek` catch-all used to sit here and claimed 64k for every
+        // unknown `deepseek-*` id, including ones with far larger windows. It
+        // shadowed DEFAULT_CONTEXT_WINDOW and produced `Cxt: 105,449 / 64,000
+        // (164.8%)` on models it had simply never heard of. An id the table does
+        // not know is better served by the default than by a stale guess.
         // OpenAI
         ("gpt-3.5", 16_385),
         ("gpt-4.1", 1_000_000),
@@ -225,22 +235,45 @@ mod tests {
         assert_eq!(context_window_for("qwen2.5-32k-instruct"), Some(32_000));
         assert_eq!(context_window_for("mistral-7b-1m"), Some(1_000_000));
         // A version-looking suffix must not be mistaken for a window.
-        assert_eq!(context_window_for("gpt-4.1-1b"), context_window_for("gpt-4.1"));
+        assert_eq!(
+            context_window_for("gpt-4.1-1b"),
+            context_window_for("gpt-4.1")
+        );
     }
 
     #[test]
     fn known_models_map_to_plausible_windows() {
         assert_eq!(context_window_for("deepseek-chat"), Some(128_000));
-        assert_eq!(context_window_for("deepseek-reasoner"), Some(64_000));
+        assert_eq!(context_window_for("deepseek-reasoner"), Some(128_000));
         assert_eq!(context_window_for("gpt-4o-mini"), Some(128_000));
         assert_eq!(context_window_for("claude-3-5-haiku-latest"), Some(200_000));
         assert_eq!(context_window_for("llama3.2"), Some(128_000));
         assert_eq!(context_window_for("totally-unknown-model"), None);
     }
 
+    /// Regression: a family catch-all claimed 64k for every unrecognised
+    /// `deepseek-*` id — including ids whose real window is far larger — which
+    /// shadowed the default and rendered as `Cxt: … / 64,000 (164.8%)`.
+    #[test]
+    fn an_unknown_deepseek_id_falls_through_to_the_default() {
+        assert_eq!(context_window_for("deepseek-flash"), None);
+        assert_eq!(
+            resolve_context_window("deepseek-flash", None),
+            DEFAULT_CONTEXT_WINDOW
+        );
+        // ... and an explicit setting still wins over both.
+        assert_eq!(
+            resolve_context_window("deepseek-flash", Some(500_000)),
+            500_000
+        );
+    }
+
     #[test]
     fn resolution_order_is_config_then_table_then_default() {
-        assert_eq!(resolve_context_window("deepseek-chat", Some(64_000)), 64_000);
+        assert_eq!(
+            resolve_context_window("deepseek-chat", Some(64_000)),
+            64_000
+        );
         assert_eq!(resolve_context_window("deepseek-chat", None), 128_000);
         assert_eq!(
             resolve_context_window("totally-unknown-model", None),

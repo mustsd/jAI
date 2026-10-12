@@ -25,6 +25,7 @@ use jai_core::engine::EngineEvent;
 use jai_core::error::{Error, Result};
 use jai_core::policy::{Approval, ApprovalRequest, Approver};
 use jai_core::provider::BoxFuture;
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -34,7 +35,6 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::Terminal;
 use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
@@ -367,7 +367,8 @@ impl App {
                     .push_notice(if approved { "approved" } else { "denied" });
             }
         }
-        self.view.set_message(if approved { "approved" } else { "denied" });
+        self.view
+            .set_message(if approved { "approved" } else { "denied" });
     }
 
     fn cancel_turn(&mut self) {

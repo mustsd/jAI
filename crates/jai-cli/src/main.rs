@@ -12,8 +12,8 @@ mod repl;
 mod session;
 mod transcript;
 mod tui;
-mod view;
 mod ui;
+mod view;
 mod web_mode;
 
 use args::Cli;

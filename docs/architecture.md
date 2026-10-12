@@ -32,8 +32,7 @@ Engine::start_turn ──► task ──► TurnHandle { events, cancel }
 append user message (SessionStore)
    │
    ▼
-loop up to agent.max_tool_rounds:
-   build ChatRequest (system prompt + stored history + tool schemas)
+loop up to agent.max_tool_rounds:   build ChatRequest (system prompt + stored history + tool schemas)
         │
         ▼
    Provider::chat_stream ──► SSE frames ──► Accumulator ──► AssistantTurn

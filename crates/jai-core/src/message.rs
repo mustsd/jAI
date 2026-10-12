@@ -146,7 +146,9 @@ impl Message {
 
     /// Reasoning text, when the model produced any.
     pub fn reasoning(&self) -> Option<&str> {
-        self.reasoning.as_deref().filter(|text| !text.trim().is_empty())
+        self.reasoning
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
     }
 
     /// Result of a tool call, fed back to the model.

@@ -103,7 +103,9 @@ impl ContextUsage {
     /// True once the context is close enough to the window to be worth warning
     /// about (the UI colours the line, and the engine mentions it once).
     pub fn is_near_limit(&self) -> bool {
-        self.percent().map(|percent| percent >= 90.0).unwrap_or(false)
+        self.percent()
+            .map(|percent| percent >= 90.0)
+            .unwrap_or(false)
     }
 }
 
@@ -119,7 +121,10 @@ impl UsageLine {
     pub fn render(&self) -> String {
         let mut segments: Vec<String> = Vec::new();
         if let Some(task) = &self.task {
-            segments.push(format!("Tokens: {}", counts(task.total_tokens, task.estimated)));
+            segments.push(format!(
+                "Tokens: {}",
+                counts(task.total_tokens, task.estimated)
+            ));
         }
         if let Some(context) = &self.context {
             segments.push(format!("Cxt: {}", context.render()));
@@ -137,10 +142,7 @@ impl ContextUsage {
     pub fn render(&self) -> String {
         let tokens = counts(self.tokens, self.estimated);
         match self.percent() {
-            Some(percent) => format!(
-                "{tokens} / {} ({percent:.1}%)",
-                format_count(self.window)
-            ),
+            Some(percent) => format!("{tokens} / {} ({percent:.1}%)", format_count(self.window)),
             None => tokens,
         }
     }
@@ -203,10 +205,7 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(0)), "0.0s");
         assert_eq!(format_duration(Duration::from_millis(45_300)), "45.3s");
         assert_eq!(format_duration(Duration::from_millis(132_400)), "2m 12.4s");
-        assert_eq!(
-            format_duration(Duration::from_secs(3_723)),
-            "1h 02m 03.0s"
-        );
+        assert_eq!(format_duration(Duration::from_secs(3_723)), "1h 02m 03.0s");
     }
 
     #[test]
@@ -294,6 +293,10 @@ mod tests {
         );
         assert!(context.estimated);
         assert_eq!(context.window, 128_000);
-        assert!(context.render().starts_with("Cxt: ~"), "{}", context.render());
+        assert!(
+            context.render().starts_with("Cxt: ~"),
+            "{}",
+            context.render()
+        );
     }
 }

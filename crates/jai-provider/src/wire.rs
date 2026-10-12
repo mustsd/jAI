@@ -212,7 +212,10 @@ impl StreamChunk {
             }
             // Reasoning is reported before the answer; the provider decides the
             // key, so both spellings are accepted.
-            for reasoning in [delta.reasoning_content, delta.reasoning].into_iter().flatten() {
+            for reasoning in [delta.reasoning_content, delta.reasoning]
+                .into_iter()
+                .flatten()
+            {
                 if !reasoning.is_empty() {
                     events.push(ChatEvent::ReasoningDelta(reasoning));
                 }

@@ -17,8 +17,8 @@ use crate::store::{SessionStore, ToolAuditRecord, status};
 use crate::stream_accum::Accumulator;
 use crate::text::truncate_bytes;
 use crate::tokens;
-use crate::usage::ContextUsage;
 use crate::tool::ToolExecutor;
+use crate::usage::ContextUsage;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -239,7 +239,6 @@ impl Engine {
         ))
     }
 
-
     pub fn provider(&self) -> &Arc<dyn Provider> {
         &self.provider
     }
@@ -423,6 +422,19 @@ impl Engine {
             }
         }
 
+        // The budget is spent while the model still wants tools. Say so: a turn
+        // that stops mid-task looks like a crash or a hang otherwise, and the
+        // answer is about to be cut short.
+        emit(
+            tx,
+            EngineEvent::Notice {
+                message: format!(
+                    "stopped after {} tool rounds (agent.max_tool_rounds); the model still asked for tools",
+                    settings.max_tool_rounds.max(1)
+                ),
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -1049,6 +1061,70 @@ mod tests {
             .unwrap();
         drain(engine.start_turn(&session.id, "loop")).await;
         assert_eq!(provider.requests().len(), 8, "max_tool_rounds default");
+    }
+
+    /// The model still wanting tools when the budget runs out must be said out
+    /// loud: a turn that just stops reads as a crash or a hang.
+    #[tokio::test]
+    async fn exhausting_the_tool_budget_is_reported() {
+        let mut scripts = Vec::new();
+        for _ in 0..10 {
+            scripts.push(vec![
+                tool_call_delta("call_1", "shell_execute", "{}"),
+                Ok(ChatEvent::Finished),
+            ]);
+        }
+        let provider = ScriptedProvider::new(scripts);
+        let (engine, store) = engine(
+            provider,
+            Some(Arc::new(EchoTools)),
+            Arc::new(AllowAll),
+            Arc::new(AlwaysApprove),
+        );
+        let session = store
+            .create_session("scripted", "scripted-1", None)
+            .unwrap();
+        let events = drain(engine.start_turn(&session.id, "loop")).await;
+        let notice = events
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::Notice { message } if message.contains("tool rounds") => {
+                    Some(message.clone())
+                }
+                _ => None,
+            })
+            .expect("a notice explaining why the turn stopped");
+        assert!(notice.contains('8'), "{notice}");
+        assert!(notice.contains("agent.max_tool_rounds"), "{notice}");
+    }
+
+    /// A turn that finishes on its own must not claim it hit a limit.
+    #[tokio::test]
+    async fn a_turn_that_converges_says_nothing_about_limits() {
+        let provider = ScriptedProvider::new(vec![
+            vec![
+                tool_call_delta("call_1", "shell_execute", "{}"),
+                Ok(ChatEvent::Finished),
+            ],
+            vec![Ok(ChatEvent::Delta("done".into())), Ok(ChatEvent::Finished)],
+        ]);
+        let (engine, store) = engine(
+            provider,
+            Some(Arc::new(EchoTools)),
+            Arc::new(AllowAll),
+            Arc::new(AlwaysApprove),
+        );
+        let session = store
+            .create_session("scripted", "scripted-1", None)
+            .unwrap();
+        let events = drain(engine.start_turn(&session.id, "loop")).await;
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                EngineEvent::Notice { message } if message.contains("tool rounds")
+            )),
+            "{events:?}"
+        );
     }
 
     #[tokio::test]

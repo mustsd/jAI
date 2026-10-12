@@ -68,6 +68,10 @@ pub struct AgentConfig {
     /// Tool permission mode: `safe` (ask) or `yolo` (no prompts).
     pub permission_mode: PermissionMode,
     /// Maximum assistant/tool round trips per user turn.
+    ///
+    /// A reasoning model that keeps calling tools without converging would
+    /// otherwise loop forever: this is the hard stop. When the budget is spent
+    /// the turn ends with a notice rather than silently. At least 1 (validated).
     pub max_tool_rounds: u32,
     /// Send tool definitions to the model at all.
     pub tools_enabled: bool,

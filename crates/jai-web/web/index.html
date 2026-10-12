@@ -380,6 +380,11 @@ function handleEvent(event, assistant) {
     case "tool_finished":
       addEvent("tool: " + event.call.name + " → " + (event.ok ? "ok" : "failed"));
       break;
+    case "notice":
+      // Notices carry things the user must see: a tool-round limit, a context
+      // that is filling up. Dropping them would hide why a turn stopped.
+      addEvent(event.message);
+      break;
     case "usage":
       break;
     case "failed":

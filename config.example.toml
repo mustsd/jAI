@@ -15,8 +15,10 @@
 # "safe" asks before every tool call; "yolo" never asks (the policy engine still
 # denies disabled tools, paths outside the workspace and sensitive files).
 permission_mode = "safe"
-# Assistant/tool round trips per user turn.
-max_tool_rounds = 8
+# Assistant/tool round trips per user turn. The hard stop against a model that
+# keeps calling tools without converging: when it is spent the turn ends and jAI
+# says so. Raise it for long multi-step tasks.
+max_tool_rounds = 500
 # Send tool definitions to the model at all.
 tools_enabled = true
 # Approve read-only tools without asking (safe mode still confirms writes).
@@ -24,6 +26,7 @@ auto_approve_read_only = false
 # system_prompt = "You are terse and prefer code over prose."
 # temperature = 0.2
 # max_tokens = 2048
+context_window = 1000000
 
 [persistence]
 enabled = true

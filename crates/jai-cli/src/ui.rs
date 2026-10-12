@@ -52,8 +52,9 @@ impl TurnUi {
 pub async fn drive_turn(mut handle: TurnHandle, ui: TurnUi) -> TurnOutcome {
     let mut outcome = TurnOutcome::default();
     let mut transcript = Transcript::new(0, ui.show_thinking);
+    let mut thinking = ThinkingLine::new();
     while let Some(event) = handle.events.recv().await {
-        render(&mut transcript, &event, ui);
+        render(&mut transcript, &mut thinking, &event, ui);
         if let EngineEvent::Failed { message, exit_code } = &event {
             outcome.exit_code = *exit_code;
             outcome.message = Some(message.clone());
@@ -64,9 +65,100 @@ pub async fn drive_turn(mut handle: TurnHandle, ui: TurnUi) -> TurnOutcome {
     outcome
 }
 
+/// The live thinking block, rewritten in place.
+///
+/// A reasoning model can emit thousands of characters before the answer starts.
+/// Letting them scroll buries the answer the user is waiting for, so the newest
+/// [`THINKING_LINES`] rows are drawn on screen and replaced as more arrives — the
+/// same block the TUI paints, repainted with `\r` and cursor-up instead of by
+/// ratatui.
+///
+/// When stderr is not a terminal there is nothing to rewrite: the text is then
+/// held back and printed once, when the thinking ends, so a pipe still gets the
+/// model's reasoning without a line per chunk.
+pub struct ThinkingLine {
+    interactive: bool,
+    /// Rows currently on screen, erased before the next block is drawn.
+    printed: usize,
+    /// Newest text, held back when the output cannot be rewritten.
+    held: Option<String>,
+    elided: bool,
+}
+
+impl ThinkingLine {
+    pub fn new() -> Self {
+        Self {
+            interactive: std::io::stderr().is_terminal(),
+            printed: 0,
+            held: None,
+            elided: false,
+        }
+    }
+
+    /// Set the live thinking text — the newest window, not a chunk.
+    pub fn update(&mut self, text: &str, elided: bool) {
+        self.elided = elided;
+        if !self.interactive {
+            self.held = Some(text.to_string());
+            return;
+        }
+        let width = crossterm::terminal::size()
+            .map(|(columns, _)| columns as usize)
+            .unwrap_or(FALLBACK_WIDTH);
+        let rows = crate::view::thinking_lines(text, width.max(3).saturating_sub(2), elided);
+        let mut stderr = std::io::stderr().lock();
+        // Walk back up to the first row of the previous block, erasing as we go:
+        // the replacement is rarely the same shape as what it replaces.
+        for _ in 1..self.printed {
+            let _ = stderr.write_all(b"\x1b[K\x1b[1A");
+        }
+        let _ = stderr.write_all(b"\x1b[K\r");
+        for (index, row) in rows.iter().enumerate() {
+            if index > 0 {
+                let _ = stderr.write_all(b"\n");
+            }
+            let _ = stderr.write_all(style_thinking(row).as_bytes());
+        }
+        let _ = stderr.flush();
+        // At least one row: the block leaves a row behind even before the first
+        // word arrives, so the next frame knows what to erase.
+        self.printed = rows.len().max(1);
+    }
+
+    /// End the thinking, leaving its last block on screen.
+    pub fn finish(&mut self) {
+        self.held = None;
+        if !self.interactive {
+            return;
+        }
+        if self.printed > 0 {
+            let _ = std::io::stderr().write_all(b"\n");
+            self.printed = 0;
+        }
+    }
+}
+
+impl Default for ThinkingLine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Assumed width when the terminal will not say how wide it is.
+const FALLBACK_WIDTH: usize = 100;
+
 /// Print one event the way line mode wants it.
-fn render(transcript: &mut Transcript, event: &EngineEvent, ui: TurnUi) {
+fn render(
+    transcript: &mut Transcript,
+    thinking: &mut ThinkingLine,
+    event: &EngineEvent,
+    ui: TurnUi,
+) {
     let diff = transcript.apply(event);
+    if !matches!(event, EngineEvent::ReasoningDelta { .. }) {
+        // Anything that is not thinking ends the live line.
+        thinking.finish();
+    }
     match (event, diff) {
         // Assistant text streams to stdout, unwrapped, byte for byte.
         (EngineEvent::Delta { .. }, Diff::Added { .. } | Diff::Append { .. }) => {
@@ -81,15 +173,17 @@ fn render(transcript: &mut Transcript, event: &EngineEvent, ui: TurnUi) {
         }
         // Reasoning is a commentary channel: stderr, dimmed if the terminal
         // supports it, and never mixed into a redirected answer.
-        (
-            EngineEvent::ReasoningDelta { .. },
-            Diff::Added { text, .. } | Diff::Append { text, .. },
-        ) => {
+        (EngineEvent::ReasoningDelta { .. }, Diff::Added { .. } | Diff::Replace { .. }) => {
             if ui.show_thinking {
-                let stderr = std::io::stderr();
-                let mut lock = stderr.lock();
-                let _ = write!(lock, "{}", style_thinking(text));
-                let _ = lock.flush();
+                // `Replace` means the block was rewritten: draw the whole newest
+                // window, which is what the transcript now holds.
+                let text = transcript
+                    .entries()
+                    .last()
+                    .filter(|entry| entry.kind == Kind::Reasoning);
+                if let Some(entry) = text {
+                    thinking.update(&entry.text, entry.elided);
+                }
             }
         }
         (EngineEvent::AssistantMessage { .. }, _) => {
@@ -241,7 +335,10 @@ mod tests {
         let outcome = drive_turn(TurnHandle::from_receiver(rx), TurnUi::quiet()).await;
         let status = outcome.status.expect("a status line");
         assert!(status.contains("Tokens: 12,400"), "{status}");
-        assert!(status.contains("Cxt: 345,000 / 1,000,000 (34.5%)"), "{status}");
+        assert!(
+            status.contains("Cxt: 345,000 / 1,000,000 (34.5%)"),
+            "{status}"
+        );
         assert!(status.contains("Time Used:"), "{status}");
     }
 }

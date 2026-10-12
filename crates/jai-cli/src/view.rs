@@ -15,7 +15,7 @@
 //! it will render, and scrolls by its own line count — the arithmetic cannot
 //! disagree with the drawing.
 
-use crate::transcript::{Kind, Transcript};
+use crate::transcript::{ELLIPSIS, Kind, THINKING_LINES, Transcript};
 use jai_core::usage::UsageLine;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -147,6 +147,11 @@ impl View {
     }
 
     /// Lines of the transcript, already wrapped to `width`.
+    ///
+    /// Thinking is the exception to per-entry wrapping: it is drawn as a live
+    /// block of at most [`THINKING_LINES`] rows that keeps re-fitting itself, so a
+    /// model that thinks for 4,000 characters cannot push the answer it is
+    /// thinking about off the screen.
     pub fn body_lines(&self, width: u16) -> Vec<Line<'static>> {
         let width = width as usize;
         let body = width.saturating_sub(GUTTER).max(1);
@@ -157,11 +162,39 @@ impl View {
                 continue;
             }
             let style = style_for(entry.kind);
+            // The blank line goes *before* an entry rather than after it: a
+            // trailing one would be the last body row, and the row that could
+            // have shown the newest line would be empty instead.
+            if !lines.is_empty() && !entry.kind.is_meta() {
+                lines.push(Line::from(""));
+            }
+            if entry.kind == Kind::Reasoning {
+                let rows = thinking_lines(&entry.text, body, entry.elided);
+                // Always one row, so the gutter shows the model is thinking even
+                // before its first word arrives.
+                let rows = if rows.is_empty() {
+                    vec![String::new()]
+                } else {
+                    rows
+                };
+                for (index, row) in rows.into_iter().enumerate() {
+                    let label = if index == 0 {
+                        gutter(entry.kind.label())
+                    } else {
+                        " ".repeat(GUTTER)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(label, Style::default().fg(Color::DarkGray)),
+                        Span::styled(row, style),
+                    ]));
+                }
+                continue;
+            }
             let mut first = true;
             for source in entry.text.split('\n') {
                 for chunk in wrap(source, body) {
                     let gutter = if first {
-                        format!("{:>width$} ", entry.kind.label(), width = GUTTER - 1)
+                        gutter(entry.kind.label())
                     } else {
                         " ".repeat(GUTTER)
                     };
@@ -175,7 +208,7 @@ impl View {
                     // An empty source line still occupies one row.
                     lines.push(Line::from(vec![
                         Span::styled(
-                            format!("{:>width$} ", entry.kind.label(), width = GUTTER - 1),
+                            gutter(entry.kind.label()),
                             Style::default().fg(Color::DarkGray),
                         ),
                         Span::styled(String::new(), style),
@@ -183,17 +216,32 @@ impl View {
                     first = false;
                 }
             }
-            if !entry.kind.is_meta() && entry.kind != Kind::Reasoning {
+        }
+        // The thinking line is the "still working" indicator while it streams;
+        // the animated one would only be a second, redundant heartbeat.
+        if self.transcript.is_running()
+            && !self.transcript.entries().is_empty()
+            && !self.live_thinking(show_thinking)
+        {
+            if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-        }
-        if self.transcript.is_running() && !self.transcript.entries().is_empty() {
             lines.push(Line::from(Span::styled(
                 format!("{}· working…", " ".repeat(GUTTER)),
                 Style::default().fg(Color::DarkGray),
             )));
         }
         lines
+    }
+
+    /// True when the newest entry is thinking text that is still arriving.
+    fn live_thinking(&self, show_thinking: bool) -> bool {
+        show_thinking
+            && self
+                .transcript
+                .entries()
+                .last()
+                .is_some_and(|entry| entry.kind == Kind::Reasoning && !entry.done)
     }
 
     /// Rows the footer needs for what is currently on screen.
@@ -412,12 +460,7 @@ impl View {
                     " y = allow, n/Esc = deny",
                     Style::default().fg(Color::DarkGray),
                 ))),
-                Rect::new(
-                    area.x,
-                    area.y + question_rows,
-                    area.width,
-                    hint_rows,
-                ),
+                Rect::new(area.x, area.y + question_rows, area.width, hint_rows),
             );
         }
     }
@@ -492,6 +535,53 @@ fn style_for(kind: Kind) -> Style {
         Kind::Notice => Style::default().fg(Color::DarkGray),
         Kind::Error => Style::default().fg(Color::Red),
     }
+}
+
+/// Fit thinking text into at most [`THINKING_LINES`] rows of `width` columns.
+///
+/// The rows kept are the two ends of what the model said: the first
+/// [`THINKING_LINES`] minus one, which is how a line of reasoning starts and what
+/// it is building on, and the newest row, which is what it is thinking *now*. The
+/// middle is what falls out — the same shape as a collapsed log, and the reason
+/// the block cannot bury the answer that follows it.
+///
+/// Newlines and runs of spaces collapse into single spaces: the block is a window
+/// over the thinking, not a transcript of it. [`ELLIPSIS`] marks where text was
+/// dropped — before the newest row when the middle went, and before the first row
+/// when `elided` says the text itself already starts mid-thought (see
+/// [`REASONING_WINDOW`]).
+///
+/// Returns no rows for empty text; the TUI substitutes an empty row so the gutter
+/// still shows that the model is thinking.
+pub fn thinking_lines(text: &str, width: usize, elided: bool) -> Vec<String> {
+    let width = width.max(1);
+    // Room for the mark, so `… ` never widens a row past the terminal.
+    let room = width.saturating_sub(2);
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flattened.is_empty() {
+        return Vec::new();
+    }
+    let mut rows = wrap(&flattened, width);
+    if rows.len() > THINKING_LINES {
+        let tail = rows.pop().expect("just wrapped, so not empty");
+        rows.truncate(THINKING_LINES - 1);
+        rows.push(mark(tail, room));
+    }
+    if elided && room >= 1 {
+        let head = std::mem::take(&mut rows[0]);
+        rows[0] = mark(head, room);
+    }
+    rows
+}
+
+/// `text` behind [`ELLIPSIS`], cut to `room` columns.
+fn mark(text: String, room: usize) -> String {
+    format!("{ELLIPSIS} {}", take_width(&text, room))
+}
+
+/// The speaker label occupying the first [`GUTTER`] columns of a row.
+fn gutter(label: &str) -> String {
+    format!("{:>width$} ", label, width = GUTTER - 1)
 }
 
 /// Wrap `text` to at most `width` display columns.
@@ -690,6 +780,87 @@ mod tests {
         height as usize - 1 /* header */ - 1 /* status */ - INPUT_ROWS as usize
     }
 
+    /// The thinking block is the first four rows and the newest one: the thread's
+    /// start, and what the model is thinking now — with the gap marked.
+    #[test]
+    fn a_long_think_keeps_its_first_rows_and_its_newest_one() {
+        let text = "one two three four five six seven eight nine ten eleven twelve";
+        let rows = thinking_lines(text, 12, false);
+        assert_eq!(rows.len(), THINKING_LINES, "{rows:?}");
+        // The first rows are the start of the thought, verbatim.
+        assert_eq!(rows[0], "one two");
+        assert_eq!(rows[THINKING_LINES - 2], "seven eight");
+        // The last row is the newest words, marked because the middle went.
+        let last = &rows[THINKING_LINES - 1];
+        assert!(last.starts_with('…'), "{rows:?}");
+        assert!(last.ends_with("twelve"), "{rows:?}");
+        assert!(!rows.iter().any(|row| row.contains("nine")), "{rows:?}");
+        for row in &rows {
+            assert!(UnicodeWidthStr::width(row.as_str()) <= 12, "{row:?}");
+        }
+    }
+
+    #[test]
+    fn a_short_think_is_shown_whole_and_unmarked() {
+        assert_eq!(
+            thinking_lines("a short thought", 40, false),
+            ["a short thought"]
+        );
+        assert!(thinking_lines("", 40, false).is_empty());
+        // An empty row is the front end's business, not this function's.
+        assert_eq!(thinking_lines("   ", 40, false), Vec::<String>::new());
+    }
+
+    /// A character window that dropped text in the transcript must stay marked,
+    /// even when what is left fits on one row.
+    #[test]
+    fn text_that_lost_its_head_stays_marked() {
+        let rows = thinking_lines("the visible remainder", 40, true);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].starts_with('…'), "{rows:?}");
+    }
+
+    /// Regression: a newline in the thinking used to become a row of its own,
+    /// which made the block longer than the rows it was allowed.
+    #[test]
+    fn newlines_in_thinking_do_not_add_rows() {
+        let rows = thinking_lines("first\n\n\nsecond", 40, false);
+        assert_eq!(rows, ["first second"]);
+    }
+
+    /// The block is one entry that renders as exactly [`THINKING_LINES`] rows, so
+    /// a long think cannot push the answer below it off the screen.
+    #[test]
+    fn a_long_think_renders_as_exactly_five_rows() {
+        let mut view = view();
+        view.transcript.set_show_thinking(true);
+        view.transcript.reset();
+        view.transcript.apply(&EngineEvent::TurnStarted {
+            session_id: "s".into(),
+        });
+        for chunk in ["alpha ".repeat(40), "omega ".repeat(40)] {
+            view.transcript
+                .apply(&EngineEvent::ReasoningDelta { text: chunk });
+        }
+        assert_eq!(view.transcript.entries().len(), 1);
+        let body = view.body_lines(60);
+        // The block only: the `· working…` heartbeat stands down while the live
+        // thinking block is the heartbeat.
+        assert_eq!(body.len(), THINKING_LINES, "{body:?}");
+        assert_eq!(body[0].spans[0].content.trim(), "thinking");
+        // The head of the think is kept — that is where the first four rows go —
+        // and the newest words are on the last row.
+        assert!(body[0].to_string().contains("alpha"));
+        assert!(body[THINKING_LINES - 1].to_string().contains("omega"));
+        // The middle is the part that had to go.
+        assert!(
+            !body.iter().any(|line| line
+                .to_string()
+                .contains("alpha alpha alpha alpha alpha alpha alpha alpha alpha")),
+            "{body:?}"
+        );
+    }
+
     #[test]
     fn wrapping_breaks_on_spaces_and_long_words() {
         assert_eq!(wrap("", 10), vec![""]);
@@ -770,7 +941,9 @@ mod tests {
         view.transcript.push_user("THE VERY LAST MESSAGE");
         let lines = render(&mut view, 50, 14);
         assert!(
-            lines.iter().any(|line| line.contains("THE VERY LAST MESSAGE")),
+            lines
+                .iter()
+                .any(|line| line.contains("THE VERY LAST MESSAGE")),
             "the end of a wrapped transcript must be visible:\n{}",
             lines.join("\n")
         );
@@ -814,7 +987,10 @@ mod tests {
             "the oldest line must be reachable:\n{}",
             lines.join("\n")
         );
-        assert_eq!(view.scroll as usize, view.rendered_lines() - view.visible_lines());
+        assert_eq!(
+            view.scroll as usize,
+            view.rendered_lines() - view.visible_lines()
+        );
     }
 
     #[test]
@@ -839,7 +1015,10 @@ mod tests {
             .find(|line| line.contains("Tokens:"))
             .expect("a status line");
         assert!(status.contains("Tokens: 12,400"), "{status}");
-        assert!(status.contains("Cxt: 345,000 / 1,000,000 (34.5%)"), "{status}");
+        assert!(
+            status.contains("Cxt: 345,000 / 1,000,000 (34.5%)"),
+            "{status}"
+        );
         assert!(status.contains("Time Used:"), "{status}");
     }
 
@@ -861,7 +1040,8 @@ mod tests {
         for height in [2u16, 3, 4, 8, 24] {
             let mut view = view();
             for index in 0..200 {
-                view.transcript.push_user(&format!("a very long message {index}"));
+                view.transcript
+                    .push_user(&format!("a very long message {index}"));
             }
             view.input = "typed".to_string();
             view.cursor = 5;
@@ -870,10 +1050,7 @@ mod tests {
                 .iter()
                 .find(|line| line.contains("You>"))
                 .unwrap_or_else(|| {
-                    panic!(
-                        "no input row at height {height}:\n{}",
-                        lines.join("\n")
-                    )
+                    panic!("no input row at height {height}:\n{}", lines.join("\n"))
                 });
             assert!(prompt_row.contains("typed"), "{prompt_row:?}");
         }

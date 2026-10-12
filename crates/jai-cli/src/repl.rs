@@ -6,7 +6,7 @@
 
 use crate::session::{CommandOutcome, SessionController};
 use crate::transcript::{Diff, Kind, Transcript};
-use crate::ui::THINKING_DOT_INTERVAL;
+use crate::ui::{THINKING_DOT_INTERVAL, ThinkingLine};
 use jai_core::engine::EngineEvent;
 use jai_core::error::{Error, Result};
 use jai_core::usage::UsageLine;
@@ -24,6 +24,8 @@ pub async fn run(controller: SessionController) -> Result<i32> {
 struct Repl {
     controller: SessionController,
     transcript: Transcript,
+    /// The live thinking line, rewritten in place while the model thinks.
+    thinking: ThinkingLine,
     /// Events of the running turn, drained while waiting for input.
     turn: Option<mpsc::Receiver<EngineEvent>>,
     cancel: Option<jai_core::TurnCanceller>,
@@ -36,6 +38,7 @@ impl Repl {
         Self {
             controller,
             transcript: Transcript::new(window, show_thinking),
+            thinking: ThinkingLine::new(),
             turn: None,
             cancel: None,
         }
@@ -222,6 +225,10 @@ impl Repl {
 
     fn render(&mut self, event: &EngineEvent, show_thinking: bool) {
         let diff = self.transcript.apply(event);
+        if !matches!(event, EngineEvent::ReasoningDelta { .. }) {
+            // Anything that is not thinking ends the live line.
+            self.thinking.finish();
+        }
         match event {
             EngineEvent::Delta { text } => {
                 if matches!(diff, Diff::Added { .. } | Diff::Append { .. }) {
@@ -229,18 +236,22 @@ impl Repl {
                     let _ = std::io::stdout().flush();
                 }
             }
-            EngineEvent::ReasoningDelta { text } => {
+            EngineEvent::ReasoningDelta { .. } => {
                 if !show_thinking {
                     return;
                 }
-                if matches!(diff, Diff::Added { .. } | Diff::Append { .. }) {
-                    let styled = if std::io::stderr().is_terminal() {
-                        format!("\x1b[2m{text}\x1b[0m")
-                    } else {
-                        text.clone()
-                    };
-                    eprint!("{styled}");
-                    let _ = std::io::stderr().flush();
+                // `Replace` carries no text: the transcript holds the newest
+                // window, because what fits depends on the width it is drawn at.
+                if !matches!(diff, Diff::Added { .. } | Diff::Replace { .. }) {
+                    return;
+                }
+                let entry = self
+                    .transcript
+                    .entries()
+                    .last()
+                    .filter(|entry| entry.kind == Kind::Reasoning);
+                if let Some(entry) = entry {
+                    self.thinking.update(&entry.text, entry.elided);
                 }
             }
             EngineEvent::AssistantMessage { content, .. } => {

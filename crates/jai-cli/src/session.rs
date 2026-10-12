@@ -11,9 +11,9 @@ use crate::args::Cli;
 use jai_core::engine::TurnHandle;
 use jai_core::error::Result;
 use jai_core::message::PermissionMode;
+use jai_core::policy::Approver;
 use jai_core::store::{Session, session_markdown};
 use jai_core::time::unix_now;
-use jai_core::policy::Approver;
 use jai_core::{Engine, Provider};
 use std::sync::Arc;
 
@@ -47,7 +47,10 @@ pub enum CommandOutcome {
     Lines(Vec<String>),
     Exit,
     /// The command needs an interactive yes/no question (`/delete`).
-    Confirm { question: String, action: ConfirmAction },
+    Confirm {
+        question: String,
+        action: ConfirmAction,
+    },
 }
 
 /// Follow-up for a confirmation-requiring command.
@@ -85,9 +88,9 @@ impl SessionOrigin {
                 "resumed the last session used in {workspace} (jai -a -c resumes the most recent anywhere, --new starts fresh)"
             )),
             SessionOrigin::Requested => Some("resumed the requested session".to_string()),
-            SessionOrigin::ForcedNew { previous } => {
-                Some(format!("started a new session (--new); {previous} is still stored"))
-            }
+            SessionOrigin::ForcedNew { previous } => Some(format!(
+                "started a new session (--new); {previous} is still stored"
+            )),
         }
     }
 }
@@ -239,7 +242,9 @@ impl SessionController {
             self.session.id
         ));
         match self.mode {
-            PermissionMode::Safe => lines.push("mode      safe (every tool call is confirmed)".into()),
+            PermissionMode::Safe => {
+                lines.push("mode      safe (every tool call is confirmed)".into())
+            }
             PermissionMode::Yolo => lines.push("mode      yolo (no confirmation prompts)".into()),
         }
         lines.push(format!(
@@ -251,7 +256,9 @@ impl SessionController {
             }
         ));
         match self.app.tools() {
-            Ok(Some(tools)) => lines.push(format!("tools     {}", tools.enabled_tools().join(", "))),
+            Ok(Some(tools)) => {
+                lines.push(format!("tools     {}", tools.enabled_tools().join(", ")))
+            }
             Ok(None) => lines.push("tools     disabled".into()),
             Err(err) => lines.push(format!("tools     unavailable: {err}")),
         }
@@ -312,9 +319,11 @@ impl SessionController {
 
     fn switch_provider(&mut self, name: &str) -> Result<()> {
         let name = name.trim().to_ascii_lowercase();
-        let resolved =
-            self.app
-                .resolved_provider_raw(&name, self.base_url.as_deref(), self.key_override.as_deref())?;
+        let resolved = self.app.resolved_provider_raw(
+            &name,
+            self.base_url.as_deref(),
+            self.key_override.as_deref(),
+        )?;
         let provider = self.app.provider(&resolved)?;
         self.provider_name = name;
         self.provider = provider;
@@ -354,7 +363,10 @@ impl SessionController {
                     &self.model,
                 )?;
                 self.app.remember(&self.provider_name, &self.model);
-                Ok(CommandOutcome::lines([format!("model set to {}", self.model)]))
+                Ok(CommandOutcome::lines([format!(
+                    "model set to {}",
+                    self.model
+                )]))
             }
             "/provider" => {
                 if argument.is_empty() {
@@ -396,7 +408,11 @@ impl SessionController {
                     "" => {
                         return Ok(CommandOutcome::lines([format!(
                             "thinking: {}",
-                            if self.show_thinking { "shown" } else { "hidden" }
+                            if self.show_thinking {
+                                "shown"
+                            } else {
+                                "hidden"
+                            }
                         )]));
                     }
                     "on" | "show" | "yes" => self.show_thinking = true,
@@ -445,9 +461,9 @@ impl SessionController {
                 lines.push(format!("mode: {}", self.mode));
                 Ok(CommandOutcome::Lines(lines))
             }
-            "/sessions" => Ok(CommandOutcome::lines(
-                crate::commands::session_table(self.app.store.as_ref())?,
-            )),
+            "/sessions" => Ok(CommandOutcome::lines(crate::commands::session_table(
+                self.app.store.as_ref(),
+            )?)),
             "/session" => {
                 let messages = self.app.store.messages(&self.session.id)?;
                 Ok(CommandOutcome::lines([
@@ -481,7 +497,9 @@ impl SessionController {
             }
             "/load" => {
                 if argument.is_empty() {
-                    return Ok(CommandOutcome::lines(["usage: /load <session id>".to_string()]));
+                    return Ok(CommandOutcome::lines([
+                        "usage: /load <session id>".to_string()
+                    ]));
                 }
                 let session = if argument.eq_ignore_ascii_case("latest") {
                     self.app.store.latest_session()?
@@ -504,7 +522,9 @@ impl SessionController {
             }
             "/rename" => {
                 if argument.is_empty() {
-                    return Ok(CommandOutcome::lines(["usage: /rename <title>".to_string()]));
+                    return Ok(CommandOutcome::lines(
+                        ["usage: /rename <title>".to_string()],
+                    ));
                 }
                 self.app.store.rename_session(&self.session.id, &argument)?;
                 Ok(CommandOutcome::lines([format!("renamed to `{argument}`")]))
@@ -532,7 +552,9 @@ impl SessionController {
                     &self.app.store.tool_audit(&self.session.id)?,
                 );
                 if argument.is_empty() {
-                    Ok(CommandOutcome::Lines(markdown.lines().map(str::to_string).collect()))
+                    Ok(CommandOutcome::Lines(
+                        markdown.lines().map(str::to_string).collect(),
+                    ))
                 } else {
                     std::fs::write(&argument, markdown)?;
                     Ok(CommandOutcome::lines([format!("exported to {argument}")]))
@@ -564,7 +586,10 @@ impl SessionController {
                 self.app
                     .store
                     .set_session_workspace(&self.session.id, &workspace)?;
-                Ok(vec![format!("deleted; started session {}", self.session.id)])
+                Ok(vec![format!(
+                    "deleted; started session {}",
+                    self.session.id
+                )])
             }
             ConfirmAction::DeleteCurrentSession => Ok(vec!["not deleted".to_string()]),
         }
@@ -582,7 +607,6 @@ impl SessionController {
     pub fn warn_if_state_dir_is_readable(&self) {
         warn_if_state_dir_is_readable(&self.app.paths);
     }
-
 }
 
 /// Warn when the state directory is readable by other users.
